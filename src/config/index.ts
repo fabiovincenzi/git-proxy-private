@@ -22,8 +22,11 @@ import { ConfigLoader } from './ConfigLoader';
 import { Configuration } from './types';
 import { serverConfig } from './env';
 import { getConfigFile } from './file';
+import { GIGABYTE } from '../constants';
 import { validateConfig } from './validators';
 import { handleErrorAndLog, handleErrorAndThrow } from '../utils/errors';
+
+export { setConfigFile, getConfigFile, validate } from './file';
 
 // Deprecated compatibility fields are still optional because the defaults do not set them.
 type OptionalTopLevelConfigKey = 'proxyUrl' | 'sslCertPemPath' | 'sslKeyPemPath';
@@ -44,6 +47,7 @@ const REQUIRED_TOP_LEVEL_CONFIG_KEYS = [
   'cookieSecret',
   'csrfProtection',
   'domains',
+  'limits',
   'plugins',
   'privateOrganizations',
   'rateLimit',
@@ -51,6 +55,7 @@ const REQUIRED_TOP_LEVEL_CONFIG_KEYS = [
   'sink',
   'tempPassword',
   'tls',
+  'ssh',
   'uiRouteAuth',
   'upstreamProxy',
   'urlShortener',
@@ -115,7 +120,7 @@ function loadFullConfiguration(): FullGitProxyConfig {
   const rawDefaultConfig = Convert.toGitProxyConfig(JSON.stringify(defaultSettings));
 
   // Clean undefined values from defaultConfig
-  const defaultConfig = cleanUndefinedValues(rawDefaultConfig) as GitProxyConfig;
+  const defaultConfig = cleanUndefinedValues(rawDefaultConfig);
 
   let userSettings: Partial<GitProxyConfig> = {};
   const userConfigFile = process.env.CONFIG_FILE || getConfigFile();
@@ -175,11 +180,21 @@ function mergeConfigurations(
     // Deep merge for specific objects
     api: userSettings.api ? cleanUndefinedValues(userSettings.api) : defaultConfig.api,
     domains: { ...defaultConfig.domains, ...userSettings.domains },
+    limits:
+      defaultConfig.limits || userSettings.limits
+        ? { ...(defaultConfig.limits ?? {}), ...(userSettings.limits ?? {}) }
+        : undefined,
     commitConfig: { ...defaultConfig.commitConfig, ...userSettings.commitConfig },
     attestationConfig: { ...defaultConfig.attestationConfig, ...userSettings.attestationConfig },
     rateLimit: userSettings.rateLimit || defaultConfig.rateLimit,
     tls: tlsConfig,
     tempPassword: { ...defaultConfig.tempPassword, ...userSettings.tempPassword },
+    ssh: {
+      ...defaultConfig.ssh,
+      ...userSettings.ssh,
+      // Ensure enabled is always a boolean
+      enabled: userSettings.ssh?.enabled ?? defaultConfig.ssh?.enabled ?? false,
+    },
     // Preserve legacy SSL fields
     sslKeyPemPath: userSettings.sslKeyPemPath || defaultConfig.sslKeyPemPath,
     sslCertPemPath: userSettings.sslCertPemPath || defaultConfig.sslCertPemPath,
@@ -221,6 +236,11 @@ export const getUpstreamProxyConfig = () => {
 export const getAuthorisedList = () => {
   const config = loadFullConfiguration();
   return config.authorisedList;
+};
+
+// Get GIT_PROXY_UI_PORT
+export const getUIPort = (): number => {
+  return Number(serverConfig.GIT_PROXY_UI_PORT);
 };
 
 // Gets a list of authorised repositories
@@ -383,6 +403,38 @@ export const getUIRouteAuth = () => {
 export const getRateLimit = () => {
   const config = loadFullConfiguration();
   return config.rateLimit;
+};
+
+export const getMaxPackSizeBytes = (): number => {
+  const config = loadFullConfiguration();
+  const configuredValue = config.limits?.maxPackSizeBytes;
+  const fallback = 1 * GIGABYTE; // 1 GiB default
+
+  if (
+    typeof configuredValue === 'number' &&
+    Number.isFinite(configuredValue) &&
+    configuredValue > 0
+  ) {
+    return configuredValue;
+  }
+
+  return fallback;
+};
+
+export const getSSHConfig = () => {
+  const defaultHostKey = {
+    privateKeyPath: '.ssh/proxy_host_key',
+    publicKeyPath: '.ssh/proxy_host_key.pub',
+  };
+
+  const config = loadFullConfiguration();
+  const sshConfig = config.ssh || { enabled: false };
+
+  if (sshConfig.enabled && !sshConfig.hostKey) {
+    sshConfig.hostKey = defaultHostKey;
+  }
+
+  return sshConfig;
 };
 
 // Function to handle configuration updates
